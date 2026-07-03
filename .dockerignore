@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.git/
+.gitignore
+.env
+.env.example
+.DS_Store
+.vscode/
+.idea/
+tests/
+README.md
+Makefile
+*.md
