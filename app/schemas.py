@@ -69,6 +69,7 @@ class ActionPlan(BaseModel):
     missing_information: list[str]
     requires_confirmation: bool
     confidence: float = Field(..., ge=0.0, le=1.0)
+    planner_mode: Literal["rule_based", "llm"] = "rule_based"
 
 
 class ExecuteRequest(BaseModel):

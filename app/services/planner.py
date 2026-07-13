@@ -9,14 +9,17 @@ This file contains two main responsibilities:
 2. Execution:
    Take an ActionPlan and run the selected mock tool.
 
-Right now, the planner is rule-based. Later, this can be replaced or extended
-with an LLM while keeping the same ActionPlan schema.
+The planner mode is controlled by the PLANNER_MODE environment variable:
+- "rule_based" (default): Uses regex-based intent detection.
+- "llm": Uses OpenAI structured outputs for intent detection.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
+from typing import Callable
 
 from app.schemas import ActionPlan, ExecuteResponse
 from app.services.tools import (
@@ -26,6 +29,28 @@ from app.services.tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_planner() -> Callable[[str], ActionPlan]:
+    """Return the active planner function based on PLANNER_MODE.
+
+    Returns:
+        Either ``plan_request`` (rule-based) or ``llm_plan_request`` (LLM).
+    """
+
+    mode = os.getenv("PLANNER_MODE", "rule_based").lower()
+
+    if mode == "llm":
+        from app.services.llm_planner import llm_plan_request
+        return llm_plan_request
+
+    if mode != "rule_based":
+        logger.warning(
+            "Unrecognized PLANNER_MODE='%s'. Falling back to rule_based.",
+            mode,
+        )
+
+    return plan_request
 
 
 # Words that should stop the customer-name capture.

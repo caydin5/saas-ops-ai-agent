@@ -6,19 +6,24 @@ This file exposes the HTTP API endpoints:
 - POST /plan
 - POST /execute
 
-The business logic lives in app/services/planner.py.
-Keeping the API layer thin makes the project easier to maintain and test.
+The business logic lives in app/services/planner.py and
+app/services/llm_planner.py. Keeping the API layer thin makes
+the project easier to maintain and test.
 """
 
 from __future__ import annotations
 
 import logging
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.schemas import ActionPlan, ExecuteRequest, ExecuteResponse, PlanRequest
-from app.services.planner import execute_plan, plan_request
+from app.services.llm_planner import MissingAPIKeyError
+from app.services.planner import execute_plan, get_planner, plan_request
+
+load_dotenv()
 
 # Basic logging setup for local development.
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +34,25 @@ app = FastAPI(
     description="A workflow orchestrator that converts natural-language SaaS operations requests into structured action plans.",
     version="0.1.0",
 )
+
+
+@app.exception_handler(MissingAPIKeyError)
+async def missing_api_key_handler(
+    request: Request, exc: MissingAPIKeyError,
+) -> JSONResponse:
+    """Return 503 when LLM mode is selected but the API key is missing.
+
+    This is a configuration error that cannot be resolved at runtime,
+    so we return 503 (Service Unavailable) instead of falling back.
+    """
+
+    return JSONResponse(
+        status_code=503,
+        content={
+            "status": "error",
+            "message": str(exc),
+        },
+    )
 
 
 @app.exception_handler(Exception)
@@ -74,11 +98,30 @@ def plan(payload: PlanRequest) -> ActionPlan:
     """
     Create an action plan from a natural-language request.
 
-    This endpoint does not execute anything.
-    It only returns the structured plan.
+    Uses the planner selected by PLANNER_MODE (default: rule_based).
+    When the LLM planner fails at runtime (API errors, timeouts), the
+    endpoint falls back to the rule-based planner and logs the failure.
+    MissingAPIKeyError is NOT caught here — it propagates to the
+    dedicated 503 handler since it is a configuration error.
     """
 
-    return plan_request(payload.request)
+    planner = get_planner()
+
+    # If using the LLM planner, wrap the call with fallback.
+    if planner is not plan_request:
+        try:
+            return planner(payload.request)
+        except MissingAPIKeyError:
+            raise  # propagate to 503 handler
+        except Exception as exc:
+            logger.warning(
+                "LLM planner failed, falling back to rule-based: %s", exc,
+            )
+            result = plan_request(payload.request)
+            result.planner_mode = "rule_based"
+            return result
+
+    return planner(payload.request)
 
 
 @app.post("/execute", response_model=ExecuteResponse)

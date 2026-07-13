@@ -6,14 +6,18 @@ This project demonstrates the core architecture of an AI agent system:
 
 ```text
 Natural language request
-→ structured action plan
+→ structured action plan (via rule-based planner or LLM)
 → tool selection
 → validation
 → execution
 → auditable result
 ```
 
-The current MVP uses a rule-based planner. The system is designed so the planner can later be replaced with an LLM while keeping the same API schema.
+The system supports two planner modes:
+- **Rule-based** (default): regex-based intent detection, zero external dependencies.
+- **LLM** (`PLANNER_MODE=llm`): OpenAI structured outputs for natural-language understanding.
+
+Both modes produce the same `ActionPlan` schema, and the executor is planner-agnostic.
 
 ---
 
@@ -28,22 +32,55 @@ Modern AI engineering is not only about training models from scratch. Many real-
 - validate missing information
 - execute workflow steps safely
 
-This project demonstrates that pattern in a SaaS operations context.
+This project demonstrates that pattern in a SaaS operations context, with a dual-planner architecture that shows both the rule-based baseline and the LLM-powered upgrade path.
 
 ---
 
 ## Features
 
-- FastAPI backend
-- Pydantic request/response schemas
-- Rule-based natural-language planner
-- Structured action plans
-- Safe `/plan` → `/execute` workflow
-- Mock tool execution
-- Missing-information validation
-- Action logs for auditability
-- Unit and API tests with pytest
+- FastAPI backend with Pydantic request/response schemas
+- Dual planner modes: rule-based (regex) and LLM (OpenAI structured outputs)
+- OpenAI structured output via `response_format` (strict JSON schema)
+- Structured action plans with intent, tool, arguments, and confidence
+- Safe `/plan` → `/execute` two-phase workflow
+- Safety gates: confirmation checks, intent/tool validation, argument validation
+- Missing-information detection (both planners)
+- Mock tool execution with auditable action logs
+- 48 unit and API tests with pytest (LLM tests fully mocked)
 - Swagger documentation through FastAPI
+
+---
+
+## Planner Modes
+
+### Rule-Based (default)
+
+The rule-based planner uses keyword matching and regex to detect intent and extract arguments. It requires no API key and runs fully offline.
+
+```bash
+# Uses rule-based planner by default
+uvicorn app.main:app --reload
+```
+
+### LLM (OpenAI Structured Outputs)
+
+The LLM planner sends the user request to OpenAI with a system prompt describing the available tools. The model returns a structured JSON response that maps directly to the `ActionPlan` Pydantic schema.
+
+```bash
+export PLANNER_MODE=llm
+export OPENAI_API_KEY=your_key_here
+uvicorn app.main:app --reload
+```
+
+The response includes `"planner_mode": "llm"` so the caller knows which planner generated the plan.
+
+### Design Decision
+
+The dual-planner architecture serves two purposes:
+1. **Portfolio**: Demonstrates both traditional NLP and LLM integration in the same project.
+2. **Production**: When the LLM planner encounters an API error at runtime, the `/plan` endpoint automatically falls back to the rule-based planner and logs the failure. A missing API key returns a clean 503 (configuration error, not a transient failure).
+
+> **Note on confidence:** The `confidence` field is non-authoritative audit metadata. The rule-based planner assigns heuristic values; the LLM planner reports model-estimated values. It is not used as a safety gate by the executor.
 
 ---
 
@@ -64,20 +101,25 @@ The MVP currently supports three SaaS operations actions:
 ```mermaid
 flowchart TD
     A[User Request] --> B[POST /plan]
-    B --> C[Rule-Based Planner]
-    C --> D[Pydantic ActionPlan]
-    D --> E[POST /execute]
-    E --> F{Requires Confirmation?}
-    F -->|Yes| G1[Block — Awaiting Confirmation]
-    F -->|No| H{Intent/Tool Consistent?}
-    H -->|No| G2[Block — Invalid Combination]
-    H -->|Yes| I{Missing Information?}
-    I -->|Yes| G3[Block — Missing Info]
-    I -->|No| J{Arguments Valid?}
-    J -->|No| G4[Block — Invalid Arguments]
-    J -->|Yes| K[Select Mock Tool]
-    K --> L[Execute Tool]
-    L --> M[Return ExecuteResponse]
+    B --> C{PLANNER_MODE?}
+    C -->|rule_based| D[Rule-Based Planner]
+    C -->|llm| E[LLM Planner]
+    E --> F[System Prompt + User Request]
+    F --> G[OpenAI Structured Output]
+    G --> H[Pydantic ActionPlan]
+    D --> H
+    H --> I[POST /execute]
+    I --> J{Requires Confirmation?}
+    J -->|Yes| K1[Block — Awaiting Confirmation]
+    J -->|No| L{Intent/Tool Consistent?}
+    L -->|No| K2[Block — Invalid Combination]
+    L -->|Yes| M{Missing Information?}
+    M -->|Yes| K3[Block — Missing Info]
+    M -->|No| N{Arguments Valid?}
+    N -->|No| K4[Block — Invalid Arguments]
+    N -->|Yes| O[Select Mock Tool]
+    O --> P[Execute Tool]
+    P --> Q[Return ExecuteResponse]
 ```
 
 ---
@@ -92,16 +134,20 @@ saas-ops-ai-agent/
     schemas.py
     services/
       __init__.py
+      llm_planner.py
       planner.py
       tools.py
   tests/
     conftest.py
     test_api.py
+    test_llm_planner.py
     test_planner.py
   README.md
   requirements.txt
   .env.example
   .gitignore
+  .dockerignore
+  Dockerfile
   Makefile
 ```
 
@@ -125,7 +171,7 @@ Example response:
 
 ### `POST /plan`
 
-Converts a natural-language request into a structured action plan.
+Converts a natural-language request into a structured action plan. Uses the planner selected by `PLANNER_MODE`.
 
 Example request:
 
@@ -135,7 +181,7 @@ Example request:
 }
 ```
 
-Example response:
+Example response (LLM mode):
 
 ```json
 {
@@ -146,7 +192,8 @@ Example response:
   },
   "missing_information": [],
   "requires_confirmation": false,
-  "confidence": 0.86
+  "confidence": 0.92,
+  "planner_mode": "llm"
 }
 ```
 
@@ -154,7 +201,7 @@ Example response:
 
 ### `POST /execute`
 
-Executes a structured action plan.
+Executes a structured action plan. The executor is planner-agnostic — it validates and runs any well-formed `ActionPlan` regardless of which planner created it.
 
 Example request:
 
@@ -168,7 +215,7 @@ Example request:
     },
     "missing_information": [],
     "requires_confirmation": false,
-    "confidence": 0.86
+    "confidence": 0.92
   }
 }
 ```
@@ -205,7 +252,7 @@ If the user says:
 }
 ```
 
-The planner detects that the customer name is missing:
+Both planners detect that the customer name is missing:
 
 ```json
 {
@@ -216,7 +263,7 @@ The planner detects that the customer name is missing:
     "customer_name"
   ],
   "requires_confirmation": false,
-  "confidence": 0.62
+  "confidence": 0.55
 }
 ```
 
@@ -254,9 +301,17 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Run the API:
+Run the API (rule-based mode):
 
 ```bash
+uvicorn app.main:app --reload
+```
+
+Run the API (LLM mode):
+
+```bash
+export PLANNER_MODE=llm
+export OPENAI_API_KEY=your_key_here
 uvicorn app.main:app --reload
 ```
 
@@ -270,45 +325,20 @@ http://127.0.0.1:8000/docs
 
 ## Running Tests
 
+Tests do not require an API key. All LLM calls are mocked.
+
 ```bash
 python -m pytest
 ```
 
 ---
 
-## Example curl Commands
+## Configuration
 
-### Health check
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-### Create action plan
-
-```bash
-curl -X POST http://127.0.0.1:8000/plan \
-  -H "Content-Type: application/json" \
-  -d '{"request": "Create a workspace for Acme Corp"}'
-```
-
-### Execute action plan
-
-```bash
-curl -X POST http://127.0.0.1:8000/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "plan": {
-      "intent": "create_workspace",
-      "tool_name": "create_workspace",
-      "arguments": {
-        "customer_name": "Acme Corp"
-      },
-      "missing_information": [],
-      "requires_confirmation": false,
-      "confidence": 0.86
-    }
-  }'
+```text
+PLANNER_MODE=rule_based      # "rule_based" (default) or "llm"
+OPENAI_API_KEY=your_key_here  # Required when PLANNER_MODE=llm
+OPENAI_MODEL=gpt-4.1-mini    # Model for LLM planner (default: gpt-4.1-mini)
 ```
 
 ---
@@ -318,6 +348,7 @@ curl -X POST http://127.0.0.1:8000/execute \
 - Python
 - FastAPI
 - Pydantic
+- OpenAI SDK (structured outputs)
 - pytest
 - Uvicorn
 
@@ -325,12 +356,8 @@ curl -X POST http://127.0.0.1:8000/execute \
 
 ## Roadmap
 
-Planned improvements:
-
-- Add LLM-backed planning mode
-- Add OpenAI structured outputs
-- Add human confirmation for risky actions
+- Add human confirmation flow for risky actions
 - Add real API integrations
 - Add persistent action audit logs
 - Add authentication
-- Add deployment configuration
+- Add multi-step planning (plan chains)
