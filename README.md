@@ -333,6 +333,14 @@ python -m pytest
 
 ---
 
+## Development and Validation
+
+I designed and implemented the core planning and execution architecture, then used Claude and Codex as independent reviewers in an iterative review process. Recommendations were verified against the source code, OpenAI's structured-output requirements, runtime behavior, and automated tests.
+
+This process strengthened the strict JSON schema, planner fallback behavior, configuration error handling, crafted-payload validation, and documentation accuracy.
+
+---
+
 ## Configuration
 
 ```text
