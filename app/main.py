@@ -13,7 +13,10 @@ the project easier to maintain and test.
 
 from __future__ import annotations
 
+import json
 import logging
+
+import openai
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -113,7 +116,15 @@ def plan(payload: PlanRequest) -> ActionPlan:
             return planner(payload.request)
         except MissingAPIKeyError:
             raise  # propagate to 503 handler
-        except Exception as exc:
+        except (
+            openai.APIError,
+            openai.APIConnectionError,
+            openai.RateLimitError,
+            openai.APITimeoutError,
+            json.JSONDecodeError,
+            KeyError,
+            ValueError,
+        ) as exc:
             logger.warning(
                 "LLM planner failed, falling back to rule-based: %s", exc,
             )

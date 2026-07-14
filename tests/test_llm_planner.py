@@ -6,6 +6,7 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+import openai
 import pytest
 from fastapi.testclient import TestClient
 
@@ -288,7 +289,9 @@ def test_plan_endpoint_falls_back_on_api_error(mock_openai_cls, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     mock_client = MagicMock()
-    mock_client.chat.completions.create.side_effect = RuntimeError("API timeout")
+    mock_client.chat.completions.create.side_effect = openai.APIConnectionError(
+        request=MagicMock(),
+    )
     mock_openai_cls.return_value = mock_client
 
     from app.main import app
